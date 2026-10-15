@@ -67,7 +67,7 @@ pub(crate) fn start_title() -> String {
 
 impl SlideEditor {
     /// The white page under the title bar while no file is open.
-    pub(crate) fn render_start_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_start_view(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let open = div()
@@ -84,6 +84,8 @@ impl SlideEditor {
             .hover(|s| s.underline())
             .child(Icon::new(Material("folder_open")).size(px(20.)).text_color(rgb(LINK_COLOR)))
             .child(crate::shell::i18n::text("start.open"))
+            // The press is the page's, which moves the window with it (`start_view_drag`).
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| this.open_file(&OpenFile, window, cx)));
         let new_files = div().flex().gap_4().ml(px(-TILE_PADDING)).children(NEW_KINDS.iter().map(|&(kind, label, color)| self.new_file_tile(kind, label, color, cx)));
 
@@ -96,6 +98,9 @@ impl SlideEditor {
             .w_full()
             .bg(rgb(0xffffff))
             .overflow_hidden()
+            // The empty parts of the page move the window, as the title row does (Linux, where
+            // the window's decorations are the window's own; a no-op everywhere else).
+            .map(|d| crate::shell::chrome::start_view_drag(d, window, cx))
             .child(
                 v_flex()
                     .w(px(COLUMN_WIDTH))
@@ -142,6 +147,8 @@ impl SlideEditor {
             .cursor_pointer()
             .hover(|s| s.bg(rgb(0xf0f4f9)))
             .child(div().relative().child(page).child(badge))
+            // The press is the tile's, not the page's (which moves the window with it).
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| this.new_file(kind, window, cx)))
             .into_any_element()
     }
@@ -200,6 +207,9 @@ impl SlideEditor {
                 .rounded_sm()
                 .bg(background)
                 .overflow_hidden()
+                // The press is the list's (its rows, its scrollbar), not the page's (which moves
+                // the window with it).
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
                     div()
                         .id("recent-files-scroll")

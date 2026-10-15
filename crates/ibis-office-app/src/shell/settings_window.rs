@@ -96,6 +96,8 @@ fn choice_label(setting: LanguageSetting) -> SharedString {
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_window_title(&i18n::text("settings.title"));
+        // The window's own title strip where the window manager draws no title bar (Linux).
+        let title_strip = crate::shell::chrome::window_title_strip(i18n::text("settings.title"), window, cx);
         let theme = cx.theme();
         let categories = [i18n::text("settings.general")];
         let current = i18n::setting();
@@ -145,6 +147,12 @@ impl Render for SettingsWindow {
                 ),
             )
             .child(div().text_sm().text_color(theme.muted_foreground).child(i18n::text("fix.update.setting.note")));
-        h_flex().id("settings").track_focus(&self.focus).size_full().items_start().bg(theme.background).text_color(theme.foreground).child(list).child(detail)
+        v_flex()
+            .id("settings-window")
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .children(title_strip)
+            .child(h_flex().id("settings").flex_1().min_h_0().track_focus(&self.focus).items_start().child(list).child(detail))
     }
 }

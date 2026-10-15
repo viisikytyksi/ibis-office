@@ -28,21 +28,24 @@ pub(crate) struct PasswordWindow {
     /// The window of the editor, to act in.
     parent: AnyWindowHandle,
     mode: Mode,
+    /// The window's title (the window manager's title bar, and the window's own strip where it
+    /// draws no title bar: see `chrome::window_title_strip`).
+    title: SharedString,
     first: Entity<InputState>,
     second: Entity<InputState>,
     error: Option<SharedString>,
 }
 
-fn open_window(view: impl FnOnce(&mut Window, &mut App) -> PasswordWindow, title: SharedString, height: f32, cx: &mut App) {
+fn open_window(view: impl FnOnce(&mut Window, &mut App, SharedString) -> PasswordWindow, title: SharedString, height: f32, cx: &mut App) {
     let parent = cx.active_window().and_then(|w| w.update(cx, |_, window, _| window.bounds()).ok());
     let (width, height) = (px(400.), px(height));
     let bounds = match parent {
         Some(p) => Bounds::new(point(p.origin.x + (p.size.width - width) / 2.0, p.origin.y + (p.size.height - height) / 2.0), size(width, height)),
         None => Bounds::centered(None, size(width, height), cx),
     };
-    let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), titlebar: Some(TitlebarOptions { title: Some(title), ..Default::default() }), ..Default::default() };
+    let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), titlebar: Some(TitlebarOptions { title: Some(title.clone()), ..Default::default() }), ..Default::default() };
     let _ = cx.open_window(options, |window, cx| {
-        let made = view(window, cx);
+        let made = view(window, cx, title);
         let first = made.first.clone();
         let view = cx.new(|_| made);
         first.update(cx, |input, cx| input.focus(window, cx));
@@ -54,10 +57,11 @@ fn open_window(view: impl FnOnce(&mut Window, &mut App) -> PasswordWindow, title
 pub(crate) fn ask_to_open(editor: WeakEntity<SlideEditor>, path: std::path::PathBuf, slide: Option<usize>, wrong: bool, window: &mut Window, cx: &mut App) {
     let parent = window.window_handle();
     open_window(
-        move |window, cx| PasswordWindow {
+        move |window, cx, title| PasswordWindow {
             editor,
             parent,
             mode: Mode::Open { path, slide },
+            title,
             first: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(i18n::text("_shell.password"))),
             second: cx.new(|cx| InputState::new(window, cx)),
             error: wrong.then(|| i18n::text("_shell.the-password-is-not-correct")),
@@ -72,10 +76,11 @@ pub(crate) fn ask_to_open(editor: WeakEntity<SlideEditor>, path: std::path::Path
 pub(crate) fn ask_to_set(editor: WeakEntity<SlideEditor>, had: bool, window: &mut Window, cx: &mut App) {
     let parent = window.window_handle();
     open_window(
-        move |window, cx| PasswordWindow {
+        move |window, cx, title| PasswordWindow {
             editor,
             parent,
             mode: Mode::Set { had },
+            title,
             first: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(i18n::text("_shell.password"))),
             second: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(i18n::text("_shell.confirm-password"))),
             error: None,
@@ -90,10 +95,11 @@ pub(crate) fn ask_to_set(editor: WeakEntity<SlideEditor>, had: bool, window: &mu
 pub(crate) fn ask_to_modify(editor: WeakEntity<SlideEditor>, window: &mut Window, cx: &mut App) {
     let parent = window.window_handle();
     open_window(
-        move |window, cx| PasswordWindow {
+        move |window, cx, title| PasswordWindow {
             editor,
             parent,
             mode: Mode::Modify,
+            title,
             first: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(i18n::text("_shell.password"))),
             second: cx.new(|cx| InputState::new(window, cx)),
             error: None,
@@ -108,10 +114,11 @@ pub(crate) fn ask_to_modify(editor: WeakEntity<SlideEditor>, window: &mut Window
 pub(crate) fn ask_to_set_modify(editor: WeakEntity<SlideEditor>, had: bool, window: &mut Window, cx: &mut App) {
     let parent = window.window_handle();
     open_window(
-        move |window, cx| PasswordWindow {
+        move |window, cx, title| PasswordWindow {
             editor,
             parent,
             mode: Mode::SetModify { had },
+            title,
             first: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(i18n::text("_shell.password"))),
             second: cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(i18n::text("_shell.confirm-password"))),
             error: None,
@@ -202,12 +209,14 @@ impl PasswordWindow {
 }
 
 impl Render for PasswordWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // The window's own title strip where the window manager draws no title bar (Linux).
+        let title_strip = crate::shell::chrome::window_title_strip(self.title.clone(), window, cx);
         let setting = matches!(self.mode, Mode::Set { .. } | Mode::SetModify { .. });
         let had = matches!(self.mode, Mode::Set { had: true } | Mode::SetModify { had: true });
         let modify = matches!(self.mode, Mode::Modify | Mode::SetModify { .. });
-        let mut body = v_flex().size_full().gap_2().p_4().bg(theme.background).text_color(theme.foreground);
+        let mut body = v_flex().flex_1().min_h_0().gap_2().p_4();
         body = body.child(div().text_size(px(13.)).child(i18n::text(match (setting, modify) {
             (true, true) => "pptx.password-window.password-needed-edit-file",
             (true, false) => "_shell.password-required-to-open-the-file-2",
@@ -229,6 +238,11 @@ impl Render for PasswordWindow {
         buttons = buttons
             .child(Button::new("password-cancel").small().ghost().label(i18n::text(if matches!(self.mode, Mode::Modify) { "pptx.password-window.open-read-only" } else { "_shell.cancel" })).on_click(cx.listener(|this, _, window, _| this.close(window))))
             .child(Button::new("password-ok").primary().small().label(i18n::text("OK")).on_click(cx.listener(|this, _, window, cx| this.accept(window, cx))));
-        body.child(buttons)
+        v_flex()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .children(title_strip)
+            .child(body.child(buttons))
     }
 }

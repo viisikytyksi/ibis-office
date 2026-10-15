@@ -74,6 +74,8 @@ pub(crate) fn version_line() -> String {
 impl Render for AboutWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_window_title(&i18n::text("help.about"));
+        // The window's own title strip where the window manager draws no title bar (Linux).
+        let title_strip = crate::shell::chrome::window_title_strip(i18n::text("help.about"), window, cx);
         let theme = cx.theme().clone();
         v_flex()
             .id("about")
@@ -84,6 +86,7 @@ impl Render for AboutWindow {
             .gap_2()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .children(title_strip)
             .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).child("ibisOffice"))
             .child(div().text_color(theme.muted_foreground).child(version_line()))
             .child(div().id("about-powered").mt_3().text_color(theme.link).underline().cursor_pointer().child(POWERED_BY).on_click(|_, _, cx| cx.open_url(PROJECT_URL)))
