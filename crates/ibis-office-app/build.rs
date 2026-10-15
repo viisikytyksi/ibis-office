@@ -64,6 +64,7 @@ fn app_version() {
         ("windows", _) => "Windows",
         ("macos", _) => "macOS",
         (_, "wasm") => "wasm",
+        ("linux", _) => "Linux",
         (os, _) => panic!("version.txt has no line for {os}"),
     };
     let version = text

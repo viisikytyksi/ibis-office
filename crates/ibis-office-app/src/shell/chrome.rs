@@ -62,6 +62,11 @@ const TEXT_SECONDARY: u32 = 0x5f6368;
 const DIVIDER: u32 = 0xc7c7c7;
 const BORDER: u32 = 0xdadce0;
 const SIDEBAR_WIDTH: f32 = 300.0;
+/// Height of a title row, and of the strip a window that has none of its own is given
+/// (`window_title_strip`), in pixels.
+pub(crate) const TITLE_ROW_HEIGHT: f32 = 36.0;
+/// Width of one of the window's buttons (最小化, 最大化, 閉じる) in that row, in pixels.
+const WINDOW_BUTTON_WIDTH: f32 = 38.0;
 
 fn disabled_color() -> Hsla {
     hsla(0.0, 0.0, 0.12, 0.38)
@@ -599,15 +604,21 @@ impl SlideEditor {
     /// The title row: the app's icon, undo and redo, the slide show (a
     /// presentation), the file name in the middle, comments, the outline
     /// (a document) and the sidebar.
-    pub(crate) fn render_title_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_title_row(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = cx.entity().downgrade();
-        let row = h_flex().h(px(36.)).flex_shrink_0().pl(px(14.)).pr(px(12.)).gap(px(8.)).items_center().bg(rgb(APP_BG)).text_color(rgb(TEXT));
+        let row = h_flex().h(px(TITLE_ROW_HEIGHT)).flex_shrink_0().pl(px(14.)).pr(px(12.)).gap(px(8.)).items_center().bg(rgb(APP_BG)).text_color(rgb(TEXT));
+        // A Linux window's decorations are the window's own (a Wayland server like GNOME's draws
+        // none), so the row's empty parts are what moves the window, and its buttons are the
+        // window's (`window_buttons`).
+        let moves_window = client_decorated(window);
+        let window_buttons = moves_window.then(|| window_buttons(window, cx).into_any_element());
         if !self.has_document {
             // The start view: the app's logo (開く and 新規作成 are in the view).
             return row
                 .child(img(app_logo()).h(px(LOGO_HEIGHT)).w(px(LOGO_HEIGHT * LOGO_ASPECT)))
-                .child(div().flex_1())
+                .child(title_row_drag(div().flex_1(), "title-row-drag", moves_window, window, cx))
                 .child(title_button("help", "help", "_shell.help", None, &editor))
+                .children(window_buttons)
                 .into_any_element();
         }
         let (app_icon, app_color) = match self.kind() {
@@ -662,14 +673,15 @@ impl SlideEditor {
                     .child(title_button("redo", "redo", "_shell.redo-z", can_redo.then(|| -> Handler { Rc::new(|this: &mut SlideEditor, window, cx| this.redo(&crate::Redo, window, cx)) }), &editor)),
             )
             .children(slideshow)
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .justify_center()
-                    .child(div().text_size(px(15.)).px(px(6.)).truncate().child(name)),
-            )
+            .child(title_row_drag(
+                h_flex().flex_1().min_w_0().justify_center().child(div().text_size(px(15.)).px(px(6.)).truncate().child(name)),
+                "title-row-drag",
+                moves_window,
+                window,
+                cx,
+            ))
             .child(buttons(h_flex()))
+            .children(window_buttons)
             .into_any_element()
     }
 
@@ -879,6 +891,128 @@ impl SlideEditor {
                 .into_any_element(),
         )
     }
+}
+
+/// Whether the window's decorations are the window's own: on Linux, a Wayland server like GNOME's
+/// draws no title bar at all (it has no `zxdg_decoration_manager_v1`), and gpui falls back to
+/// client-side decorations — so the window's title row, its buttons and its drag are the app's.
+/// Elsewhere (macOS, Windows, an X11 session with a window manager) the window manager draws them
+/// and nothing of this is used.
+pub(crate) fn client_decorated(window: &Window) -> bool {
+    cfg!(target_os = "linux") && matches!(window.window_decorations(), Decorations::Client { .. })
+}
+
+/// The drag of a window: the pointer was pressed on the title row (`WindowDrag::moving`) and the
+/// first move over it asks the compositor to move the window.
+struct WindowDrag {
+    moving: bool,
+}
+
+/// `d` moves the window while the pointer drags it: the press is remembered and the first move over
+/// `d` asks the compositor to move the window, the way gpui-component's `TitleBar` does. `id` names
+/// the drag's state: one window may have several (the title row, the start view's empty surface).
+fn draggable<E: InteractiveElement>(d: E, id: &'static str, window: &mut Window, cx: &mut App) -> E {
+    let drag = window.use_keyed_state(id, cx, |_, _| WindowDrag { moving: false });
+    d.on_mouse_down(MouseButton::Left, window.listener_for(&drag, |drag, _, _, _| drag.moving = true))
+        .on_mouse_up(MouseButton::Left, window.listener_for(&drag, |drag, _, _, _| drag.moving = false))
+        .on_mouse_down_out(window.listener_for(&drag, |drag, _, _, _| drag.moving = false))
+        .on_mouse_move(window.listener_for(&drag, |drag, _, window, _| {
+            if std::mem::take(&mut drag.moving) {
+                window.start_window_move();
+            }
+        }))
+}
+
+/// `d` as `draggable`, where the window's decorations are the window's own (`client_decorated`);
+/// where the window manager decorates the window, `d` is returned unchanged: its own title bar
+/// moves the window.
+fn title_row_drag<E: InteractiveElement>(d: E, id: &'static str, moves_window: bool, window: &mut Window, cx: &mut App) -> E {
+    if moves_window { draggable(d, id, window, cx) } else { d }
+}
+
+/// `d` as `draggable`, for the empty surface of a whole window (`render_start_view`): it moves
+/// the window where the window's decorations are the window's own (`client_decorated`).
+pub(crate) fn start_view_drag<E: InteractiveElement>(d: E, window: &mut Window, cx: &mut App) -> E {
+    if client_decorated(window) { draggable(d, "start-view-drag", window, cx) } else { d }
+}
+
+/// The three buttons a window has at the right of its title bar — 最小化, 最大化 (元に戻す while the
+/// window is maximized) and 閉じる — where the window's decorations are the window's own
+/// (`client_decorated`); where the window manager draws them, it draws these too. The window
+/// manager says which it takes (a tiling compositor may take neither minimize nor maximize);
+/// 閉じる is always the window's own.
+pub(crate) fn window_buttons(window: &Window, cx: &App) -> impl IntoElement {
+    let supported = window.window_controls();
+    let maximized = window.is_maximized();
+    let (danger, danger_foreground) = (cx.theme().danger, cx.theme().danger_foreground);
+    h_flex()
+        .id("window-buttons")
+        .flex_none()
+        .h_full()
+        .when(supported.minimize, |d| d.child(window_button("window-minimize", "remove", |window, _| window.minimize_window(), None)))
+        .when(supported.maximize, |d| {
+            let name = if maximized { "filter_none" } else { "crop_square" };
+            d.child(window_button("window-maximize", name, |window, _| window.zoom_window(), None))
+        })
+        .child(window_button("window-close", "close", |window, _| window.remove_window(), Some((danger, danger_foreground))))
+}
+
+/// One of those buttons: `name` is the Material icon drawn in it, `close` is the red it is hovered
+/// in (the app's own colours elsewhere), and `action` is what a click does to the window.
+fn window_button(id: &'static str, name: &'static str, action: fn(&mut Window, &mut App), close: Option<(Hsla, Hsla)>) -> AnyElement {
+    let (hover_bg, hover_fg) = close.unwrap_or_else(|| (hsla(0.0, 0.0, 0.27, 0.08), rgb(TEXT).into()));
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .w(px(WINDOW_BUTTON_WIDTH))
+        .h_full()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(rgb(ICON))
+        .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+            window.prevent_default();
+            cx.stop_propagation();
+        })
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            action(window, cx);
+        })
+        // No colour of its own: the icon takes the button's, so the hover changes it (閉じる: white on red).
+        .child(Icon::new(Material(name)).size(px(16.)))
+        .into_any_element()
+}
+
+/// The title strip of a window that has none of its own (設定, バージョン情報, パスワード): the title,
+/// the window's buttons (`window_buttons`) and the window's own drag (`draggable`). `None` where
+/// the window manager draws the window's title bar, so the caller adds nothing there.
+pub(crate) fn window_title_strip(title: SharedString, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    if !client_decorated(window) {
+        return None;
+    }
+    Some(
+        h_flex()
+            .id("window-title-strip")
+            .w_full()
+            .h(px(TITLE_ROW_HEIGHT))
+            .flex_shrink_0()
+            .items_center()
+            .pl(px(12.))
+            .bg(rgb(APP_BG))
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .text_color(rgb(TEXT))
+            .child(
+                draggable(div().flex_1().min_w_0(), "window-title-strip-drag", window, cx)
+                    .truncate()
+                    .text_size(px(13.))
+                    .child(title),
+            )
+            .child(window_buttons(window, cx))
+            .into_any_element(),
+    )
 }
 
 /// A round icon button of the title row (32 px).
